@@ -67,6 +67,10 @@
             <i data-lucide="wallet"></i>
             <span>Budget</span>
           </button>
+          <button type="button" class="nav-link" data-view="subscriptions">
+            <i data-lucide="repeat"></i>
+            <span>Subscriptions</span>
+          </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -120,6 +124,9 @@
 
         <!-- Main View Content -->
         <main class="main-content" id="main-content">
+          <!-- Server Status / Loading / Error Banner Region -->
+          <div id="global-status-region" aria-live="polite"></div>
+
           <!-- Feature 1: Dashboard View -->
           <section id="view-dashboard" class="view-panel is-active" aria-labelledby="topbar-title"></section>
 
@@ -131,6 +138,9 @@
 
           <!-- Feature 5: Budget Management View -->
           <section id="view-budget" class="view-panel" hidden aria-label="Budget Management"></section>
+
+          <!-- Feature 6: Subscription Tracker View -->
+          <section id="view-subscriptions" class="view-panel" hidden aria-label="Subscription Tracker"></section>
         </main>
       </div>
     </div>
@@ -263,6 +273,158 @@
             </button>
             <button type="submit" id="transaction-submit-btn" class="btn btn-primary">
               Save Transaction
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Feature 6: Add / Edit Subscription Modal -->
+    <div
+      id="subscription-modal"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="subscription-modal-title"
+      hidden
+    >
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <div>
+            <h2 id="subscription-modal-title" class="modal-title">Add Subscription</h2>
+            <p id="subscription-modal-subtitle" class="modal-subtitle">
+              Track a new recurring subscription service.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="subscription-modal-close"
+            class="icon-btn"
+            aria-label="Close subscription dialog"
+          >
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <form id="subscription-form" class="modal-body" novalidate>
+          <input type="hidden" id="sub-id" name="id" value="" />
+
+          <!-- Billing Cycle Segmented Switch -->
+          <div class="form-group">
+            <span class="form-label">Billing Cycle</span>
+            <div class="segmented-control" role="radiogroup" aria-label="Billing Cycle">
+              <button
+                type="button"
+                class="segmented-btn is-active"
+                data-cycle="monthly"
+                id="sub-cycle-monthly"
+                aria-pressed="true"
+              >
+                <i data-lucide="calendar"></i>
+                <span>Monthly</span>
+              </button>
+              <button
+                type="button"
+                class="segmented-btn"
+                data-cycle="yearly"
+                id="sub-cycle-yearly"
+                aria-pressed="false"
+              >
+                <i data-lucide="calendar-range"></i>
+                <span>Yearly</span>
+              </button>
+            </div>
+            <input type="hidden" id="sub-cycle" name="billing_cycle" value="monthly" />
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="sub-name" class="form-label">Service Name <span class="required-mark">*</span></label>
+              <input
+                type="text"
+                id="sub-name"
+                name="name"
+                class="input-control"
+                placeholder="e.g., Netflix, Spotify, Amazon Prime"
+                maxlength="80"
+                required
+              />
+              <span class="field-error" id="err-sub-name" role="alert"></span>
+            </div>
+
+            <div class="form-group">
+              <label for="sub-amount" class="form-label">Cost ($) <span class="required-mark">*</span></label>
+              <input
+                type="number"
+                id="sub-amount"
+                name="amount"
+                class="input-control mono-input"
+                placeholder="0.00"
+                step="0.01"
+                min="0.01"
+                required
+              />
+              <span class="field-error" id="err-sub-amount" role="alert"></span>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="sub-category" class="form-label">Category <span class="required-mark">*</span></label>
+              <select id="sub-category" name="category" class="select-control" required></select>
+              <span class="field-error" id="err-sub-category" role="alert"></span>
+            </div>
+
+            <div class="form-group">
+              <label for="sub-renewal-date" class="form-label">Next Renewal Date <span class="required-mark">*</span></label>
+              <input
+                type="date"
+                id="sub-renewal-date"
+                name="renewal_date"
+                class="input-control mono-input"
+                required
+              />
+              <span class="field-error" id="err-sub-renewal-date" role="alert"></span>
+            </div>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-group">
+              <label for="sub-status" class="form-label">Status</label>
+              <select id="sub-status" name="status" class="select-control">
+                <option value="active">Active</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="expired">Expired</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="display: flex; flex-direction: column; justify-content: center;">
+              <span class="form-label">Usage Review</span>
+              <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13.5px; margin-top: 6px;">
+                <input type="checkbox" id="sub-unused" name="is_unused" style="width: 16px; height: 16px; accent-color: var(--primary);" />
+                <span>Mark as unused (flag to review/cancel)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="sub-description" class="form-label">Plan / Notes</label>
+            <textarea
+              id="sub-description"
+              name="description"
+              class="textarea-control"
+              rows="2"
+              maxlength="240"
+              placeholder="e.g., Family tier, payment method, shared with roommate"
+            ></textarea>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" id="subscription-modal-cancel" class="btn btn-secondary">
+              Cancel
+            </button>
+            <button type="submit" id="subscription-submit-btn" class="btn btn-primary">
+              Save Subscription
             </button>
           </div>
         </form>

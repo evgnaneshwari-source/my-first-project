@@ -1,17 +1,23 @@
 /**
  * app.js
  * Application bootstrap, navigation state, modal orchestration, and reactive view updates.
+ * Connected to Express + SQLite backend through async storage methods.
  */
 
 import {
   clearAllData,
+  deleteSubscription,
   deleteTransaction,
   getBudget,
   getCurrentMonthISO,
+  getSubscriptions,
   getTransactions,
+  migrateFromLocalStorage,
   resetToSampleData,
   saveBudget,
+  saveSubscription,
   saveTransaction,
+  updateSubscription,
   updateTransaction,
 } from './storage.js';
 import {
@@ -25,12 +31,17 @@ import {
 import { renderDashboardView } from './dashboard.js';
 import { renderAnalyticsView } from './analytics.js';
 import { computeBudgetStatus, renderBudgetView } from './budget.js';
+import {
+  createSubscriptionModalController,
+  renderSubscriptionsView,
+} from './subscriptions.js';
 
 const VIEW_LABELS = {
   dashboard: 'Dashboard',
   transactions: 'Transactions',
   analytics: 'Analytics',
   budget: 'Budget',
+  subscriptions: 'Subscriptions',
 };
 
 const appState = {
@@ -38,9 +49,13 @@ const appState = {
   activeMonth: getCurrentMonthISO(),
   transactions: [],
   budget: null,
+  subscriptions: [],
+  isLoading: false,
+  error: null,
 };
 
 let transactionModal = null;
+let subscriptionModal = null;
 let pendingConfirmAction = null;
 
 /* ==========================================================================
@@ -68,6 +83,45 @@ function showToast(message, variant = 'success') {
   setTimeout(() => {
     toast.remove();
   }, 3600);
+}
+
+/* ==========================================================================
+   Status Banner (Loading / Server Error)
+   ========================================================================== */
+
+function renderStatusBanner() {
+  const container = document.getElementById('global-status-region');
+  if (!container) return;
+
+  if (appState.isLoading) {
+    container.innerHTML = `
+      <div class="alert-banner" role="status">
+        <i data-lucide="loader"></i>
+        <div>
+          <h3 class="alert-banner-title">Loading Ledger</h3>
+          <p class="alert-banner-desc">Syncing records with the database...</p>
+        </div>
+      </div>
+    `;
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  if (appState.error) {
+    container.innerHTML = `
+      <div class="alert-banner is-exceeded" role="alert">
+        <i data-lucide="alert-octagon"></i>
+        <div>
+          <h3 class="alert-banner-title">Server Connection Error</h3>
+          <p class="alert-banner-desc">${escapeHtml(appState.error)}</p>
+        </div>
+      </div>
+    `;
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  container.innerHTML = '';
 }
 
 /* ==========================================================================
@@ -117,10 +171,30 @@ function setupConfirmModal() {
    Data Refresh & View Rendering
    ========================================================================== */
 
-function syncStateFromStorage() {
-  appState.transactions = getTransactions();
-  appState.budget = getBudget();
-  populateMonthSelector();
+async function syncStateFromStorage() {
+  appState.isLoading = true;
+  appState.error = null;
+  renderStatusBanner();
+
+  try {
+    const [txns, budget, subs] = await Promise.all([
+      getTransactions(),
+      getBudget(appState.activeMonth),
+      getSubscriptions(),
+    ]);
+    appState.transactions = txns;
+    appState.budget = budget;
+    appState.subscriptions = subs;
+    populateMonthSelector();
+  } catch (err) {
+    console.error('Failed to sync data from backend:', err);
+    appState.error = err.message || 'Unable to connect to server. Ensure the backend is running.';
+    showToast(appState.error, 'error');
+  } finally {
+    appState.isLoading = false;
+    renderStatusBanner();
+    renderActiveView();
+  }
 }
 
 function populateMonthSelector() {
@@ -143,7 +217,7 @@ function populateMonthSelector() {
 }
 
 function renderActiveView() {
-  const viewIds = ['dashboard', 'transactions', 'analytics', 'budget'];
+  const viewIds = ['dashboard', 'transactions', 'analytics', 'budget', 'subscriptions'];
   viewIds.forEach((id) => {
     const panel = document.getElementById(`view-${id}`);
     const isTarget = id === appState.activeView;
@@ -166,15 +240,44 @@ function renderActiveView() {
     onNavigate: (viewName) => switchView(viewName),
     onOpenAdd: () => transactionModal.openForCreate('expense'),
     onEdit: (id) => {
-      const target = appState.transactions.find((t) => t.id === id);
+      const target = appState.transactions.find((t) => String(t.id) === String(id));
       if (target) transactionModal.openForEdit(target);
     },
     onDelete: (id) => requestDeleteTransaction(id),
-    onSaveBudget: (monthlyLimit) => {
-      saveBudget({ monthlyLimit, month: appState.activeMonth });
-      syncStateFromStorage();
-      renderActiveView();
-      showToast('Monthly budget updated.', 'success');
+    onSaveBudget: async (monthlyLimit) => {
+      try {
+        await saveBudget({ monthlyLimit, month: appState.activeMonth });
+        await syncStateFromStorage();
+        showToast('Monthly budget updated.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to update budget', 'error');
+      }
+    },
+    // Subscriptions Handlers
+    onOpenAddSubscription: () => subscriptionModal.openForCreate(),
+    onEditSubscription: (id) => {
+      const target = appState.subscriptions.find((s) => String(s.id) === String(id));
+      if (target) subscriptionModal.openForEdit(target);
+    },
+    onDeleteSubscription: (id) => requestDeleteSubscription(id),
+    onToggleUnused: async (id) => {
+      const target = appState.subscriptions.find((s) => String(s.id) === String(id));
+      if (!target) return;
+      try {
+        await updateSubscription(id, {
+          ...target,
+          is_unused: !target.is_unused,
+        });
+        await syncStateFromStorage();
+        showToast(
+          target.is_unused
+            ? `Unmarked "${target.name}" from unused review.`
+            : `Marked "${target.name}" as unused for cancellation review.`,
+          'success'
+        );
+      } catch (err) {
+        showToast(err.message || 'Failed to update subscription', 'error');
+      }
     },
   };
 
@@ -190,6 +293,12 @@ function renderActiveView() {
     renderAnalyticsView(document.getElementById('view-analytics'), appState, handlers);
   } else if (appState.activeView === 'budget') {
     renderBudgetView(document.getElementById('view-budget'), appState, handlers);
+  } else if (appState.activeView === 'subscriptions') {
+    renderSubscriptionsView(
+      document.getElementById('view-subscriptions'),
+      appState,
+      handlers
+    );
   }
 
   if (window.lucide) window.lucide.createIcons();
@@ -208,63 +317,104 @@ function switchView(viewName) {
 
 let openConfirmModal = null;
 
-function handleSaveTransaction(payload) {
+async function handleSaveTransaction(payload) {
   const isEditing = Boolean(payload.id);
 
-  if (isEditing) {
-    updateTransaction(payload.id, payload);
-    showToast('Transaction updated.', 'success');
-  } else {
-    saveTransaction(payload);
-    showToast('Transaction added.', 'success');
-  }
-
-  // Switch active month to the saved transaction's month if needed so user sees immediate impact
-  if (payload.date && payload.date.length >= 7) {
-    appState.activeMonth = payload.date.slice(0, 7);
-  }
-
-  syncStateFromStorage();
-  renderActiveView();
-
-  // Check budget threshold when saving an expense
-  if (payload.type === 'expense') {
-    const status = computeBudgetStatus(
-      appState.transactions,
-      appState.budget,
-      appState.activeMonth
-    );
-    if (status.hasBudget && status.state === 'exceeded') {
-      showToast(
-        `Budget exceeded (${status.utilizationPct.toFixed(1)}% used for ${formatMonthLabel(
-          appState.activeMonth
-        )}).`,
-        'error'
-      );
-    } else if (status.hasBudget && status.state === 'warning') {
-      showToast(
-        `Budget warning: ${status.utilizationPct.toFixed(1)}% used for ${formatMonthLabel(
-          appState.activeMonth
-        )}.`,
-        'warning'
-      );
+  try {
+    if (isEditing) {
+      await updateTransaction(payload.id, payload);
+      showToast('Transaction updated.', 'success');
+    } else {
+      await saveTransaction(payload);
+      showToast('Transaction added.', 'success');
     }
+
+    if (payload.date && payload.date.length >= 7) {
+      appState.activeMonth = payload.date.slice(0, 7);
+    }
+
+    await syncStateFromStorage();
+
+    if (payload.type === 'expense') {
+      const status = computeBudgetStatus(
+        appState.transactions,
+        appState.budget,
+        appState.activeMonth
+      );
+      if (status.hasBudget && status.state === 'exceeded') {
+        showToast(
+          `Budget exceeded (${status.utilizationPct.toFixed(1)}% used for ${formatMonthLabel(
+            appState.activeMonth
+          )}).`,
+          'error'
+        );
+      } else if (status.hasBudget && status.state === 'warning') {
+        showToast(
+          `Budget warning: ${status.utilizationPct.toFixed(1)}% used for ${formatMonthLabel(
+            appState.activeMonth
+          )}.`,
+          'warning'
+        );
+      }
+    }
+  } catch (err) {
+    showToast(err.message || 'Failed to save transaction', 'error');
   }
 }
 
 function requestDeleteTransaction(id) {
-  const txn = appState.transactions.find((t) => t.id === id);
+  const txn = appState.transactions.find((t) => String(t.id) === String(id));
   if (!txn) return;
 
   openConfirmModal({
     title: 'Delete Transaction',
     message: `Are you sure you want to delete "${txn.title}"? This action cannot be undone.`,
     confirmLabel: 'Delete',
-    onConfirm: () => {
-      deleteTransaction(id);
-      syncStateFromStorage();
-      renderActiveView();
-      showToast('Transaction deleted.', 'success');
+    onConfirm: async () => {
+      try {
+        await deleteTransaction(id);
+        await syncStateFromStorage();
+        showToast('Transaction deleted.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to delete transaction', 'error');
+      }
+    },
+  });
+}
+
+async function handleSaveSubscription(payload) {
+  const isEditing = Boolean(payload.id);
+
+  try {
+    if (isEditing) {
+      await updateSubscription(payload.id, payload);
+      showToast('Subscription updated.', 'success');
+    } else {
+      await saveSubscription(payload);
+      showToast('Subscription added.', 'success');
+    }
+    await syncStateFromStorage();
+  } catch (err) {
+    showToast(err.message || 'Failed to save subscription', 'error');
+  }
+}
+
+function requestDeleteSubscription(id) {
+  const sub = appState.subscriptions.find((s) => String(s.id) === String(id));
+  if (!sub) return;
+
+  openConfirmModal({
+    title: 'Delete Subscription',
+    message: `Are you sure you want to delete "${sub.name}" from your subscriptions tracker? This action cannot be undone.`,
+    confirmLabel: 'Delete Subscription',
+    onConfirm: async () => {
+      try {
+        await deleteSubscription(id);
+        await syncStateFromStorage();
+        showToast('Subscription deleted.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to delete subscription', 'error');
+      }
     },
   });
 }
@@ -287,10 +437,13 @@ function closeMobileSidebar() {
    Bootstrap
    ========================================================================== */
 
-function initApp() {
+async function initApp() {
   openConfirmModal = setupConfirmModal();
   transactionModal = createTransactionModalController({
     onSave: handleSaveTransaction,
+  });
+  subscriptionModal = createSubscriptionModalController({
+    onSave: handleSaveSubscription,
   });
 
   // Navigation buttons
@@ -300,11 +453,20 @@ function initApp() {
 
   // Topbar primary action & month switcher
   document.getElementById('btn-open-add-modal')?.addEventListener('click', () => {
-    transactionModal.openForCreate('expense');
+    if (appState.activeView === 'subscriptions') {
+      subscriptionModal.openForCreate();
+    } else {
+      transactionModal.openForCreate('expense');
+    }
   });
 
-  document.getElementById('global-month-select')?.addEventListener('change', (e) => {
+  document.getElementById('global-month-select')?.addEventListener('change', async (e) => {
     appState.activeMonth = e.target.value;
+    try {
+      appState.budget = await getBudget(appState.activeMonth);
+    } catch (err) {
+      console.error('Error fetching budget for selected month:', err);
+    }
     renderActiveView();
   });
 
@@ -327,15 +489,18 @@ function initApp() {
     openConfirmModal({
       title: 'Load Sample Data',
       message:
-        'Replace current transactions and budget with the curated sample dataset? Any custom entries will be overwritten.',
+        'Replace current ledger records, budget, and subscriptions with the curated sample dataset? Any custom entries will be overwritten.',
       confirmLabel: 'Load Sample Data',
-      onConfirm: () => {
-        resetToSampleData();
-        appState.activeMonth = getCurrentMonthISO();
-        syncStateFromStorage();
-        renderActiveView();
-        closeMobileSidebar();
-        showToast('Sample dataset loaded.', 'success');
+      onConfirm: async () => {
+        try {
+          await resetToSampleData();
+          appState.activeMonth = getCurrentMonthISO();
+          await syncStateFromStorage();
+          closeMobileSidebar();
+          showToast('Sample dataset loaded.', 'success');
+        } catch (err) {
+          showToast(err.message || 'Failed to load sample data', 'error');
+        }
       },
     });
   });
@@ -344,22 +509,35 @@ function initApp() {
     openConfirmModal({
       title: 'Clear All Data',
       message:
-        'Delete every transaction and reset your monthly budget to $0? This action cannot be undone.',
+        'Delete every transaction, subscription, and reset your monthly budget to $0? This action cannot be undone.',
       confirmLabel: 'Clear Everything',
-      onConfirm: () => {
-        clearAllData();
-        appState.activeMonth = getCurrentMonthISO();
-        syncStateFromStorage();
-        renderActiveView();
-        closeMobileSidebar();
-        showToast('All local data cleared.', 'success');
+      onConfirm: async () => {
+        try {
+          await clearAllData();
+          appState.activeMonth = getCurrentMonthISO();
+          await syncStateFromStorage();
+          closeMobileSidebar();
+          showToast('All data cleared.', 'success');
+        } catch (err) {
+          showToast(err.message || 'Failed to clear data', 'error');
+        }
       },
     });
   });
 
-  // Initial load
-  syncStateFromStorage();
-  renderActiveView();
+  // Check and run one-time migration from LocalStorage if needed
+  try {
+    const migration = await migrateFromLocalStorage();
+    if (migration.migrated && migration.count > 0) {
+      console.log(`Migrated ${migration.count} records from LocalStorage.`);
+      showToast(`Imported ${migration.count} existing records to database.`, 'success');
+    }
+  } catch (err) {
+    console.warn('LocalStorage migration notice:', err);
+  }
+
+  // Initial load from backend
+  await syncStateFromStorage();
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
