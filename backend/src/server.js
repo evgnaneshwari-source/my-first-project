@@ -38,8 +38,8 @@ app.use(notFoundHandler);
 // Centralized error handler
 app.use(errorHandler);
 
-// Start server
-if (process.env.NODE_ENV !== 'test') {
+// Start server when run directly (local development)
+if (require.main === module || (process.env.NODE_ENV !== 'test' && !process.env.VERCEL)) {
   app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
     console.log(`Frontend served at: http://localhost:${PORT}`);
